@@ -1,0 +1,82 @@
+# -*- coding: utf-8 -*-
+
+import MetaTrader5 as mt5
+import fann2
+import numpy as np
+
+# Conectar ao MetaTrader 5
+if not mt5.initialize():
+    print("Falha ao conectar ao MetaTrader 5")
+    mt5.shutdown()
+
+# Obter os dados de histórico de preços do par EURUSD no timeframe de 1 minuto
+symbol = "EURUSD"
+timeframe = mt5.TIMEFRAME_M1
+history_data = mt5.copy_rates_from(symbol, timeframe, 0, 1000)
+
+# Preparar os dados de entrada para o modelo FANN
+input_data = []
+output_data = []
+for i in range(len(history_data)):
+    input_data.append([history_data[i].open, history_data[i].high, history_data[i].low, history_data[i].close])
+    output_data.append([history_data[i+1].open if i+1<len(history_data) else history_data[i].open])
+
+# Normalizar os dados de entrada e saída
+input_data = np.array(input_data)
+output_data = np.array(output_data)
+input_data_norm = (input_data - input_data.mean(axis=0)) / input_data.std(axis=0)
+output_data_norm = (output_data - output_data.mean()) / output_data.std()
+
+# Carregar o modelo FANN
+model = fann2.libfann.neural_net()
+model.create_from_file("modelo.fann")
+
+# Fazer a previsão do preço de abertura do próximo candle
+last_candle = mt5.copy_rates_from_pos(symbol, timeframe, 0, 1)[0]
+prediction_input = np.array([[last_candle.open, last_candle.high, last_candle.low, last_candle.close]])
+prediction_input_norm = (prediction_input - input_data.mean(axis=0)) / input_data.std(axis=0)
+prediction_norm = model.run(prediction_input_norm)[0]
+prediction = prediction_norm * output_data.std() + output_data.mean()
+
+# Enviar uma ordem de compra se a previsão for maior que o preço de abertura atual
+if prediction > last_candle.open:
+    lot_size = 0.1
+    sl = last_candle.open - 0.0010
+    tp = last_candle.open + 0.0010
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot_size,
+        "type": mt5.ORDER_TYPE_BUY,
+        "price": last_candle.ask,
+        "sl": sl,
+        "tp": tp,
+        "magic": 123456,
+        "comment": "Ordem de compra gerada pela rede neural"
+    }
+    result = mt5.order_send(request)
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print("Erro ao enviar a ordem de compra:", result.comment)
+
+# Enviar uma ordem de venda se a previsão for menor que o preço de abertura atual
+if prediction < last_candle.open:
+    lot_size = 0.1
+    sl = last_candle.open + 0.0010
+    tp = last_candle.open - 0.0010
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot_size,
+        "type": mt5.ORDER_TYPE_SELL,
+        "price": last_candle.bid,
+        "sl": sl,
+        "tp": tp,
+        "magic": 123456,
+        "comment": "Ordem de venda gerada pela rede neural"
+    }
+    result = mt5.order_send(request)
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print("Erro ao enviar a ordem de venda:", result.comment)
+
+# Desconectar do MetaTrader 5
+mt5.shutdown()
